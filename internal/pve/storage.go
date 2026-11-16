@@ -1,6 +1,7 @@
 package pve
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 )
 
@@ -38,13 +40,47 @@ func (c *Client) NodeStorage(ctx context.Context, node string) ([]Storage, error
 
 // StorageContentItem is one volume/ISO/template/backup file on a storage.
 type StorageContentItem struct {
-	VolID     string `json:"volid"`
-	Content   string `json:"content"` // "images" | "iso" | "vztmpl" | "backup" | ...
-	Format    string `json:"format,omitempty"`
-	Size      int64  `json:"size,omitempty"`
-	VMID      int    `json:"vmid,omitempty"`
-	CTime     int64  `json:"ctime,omitempty"`
-	Protected int    `json:"protected,omitempty"` // 1 = exempt from prune-backups deletion
+	VolID     string   `json:"volid"`
+	Content   string   `json:"content"` // "images" | "iso" | "vztmpl" | "backup" | ...
+	Format    string   `json:"format,omitempty"`
+	Size      int64    `json:"size,omitempty"`
+	VMID      int      `json:"vmid,omitempty"`
+	CTime     unixTime `json:"ctime,omitempty"`
+	Protected int      `json:"protected,omitempty"` // 1 = exempt from prune-backups deletion
+}
+
+// unixTime is a unix-seconds timestamp. Directory storage returns ctime as a
+// JSON number. LVM returns the same timestamp as a decimal string. Both are
+// one clock value.
+type unixTime int64
+
+func (t *unixTime) UnmarshalJSON(b []byte) error {
+	b = bytes.TrimSpace(b)
+	if len(b) == 0 || bytes.Equal(b, []byte("null")) {
+		return nil
+	}
+	if b[0] == '"' {
+		var s string
+		if err := json.Unmarshal(b, &s); err != nil {
+			return err
+		}
+		if s == "" {
+			*t = 0
+			return nil
+		}
+		v, err := strconv.ParseInt(s, 10, 64)
+		if err != nil {
+			return fmt.Errorf("parse unix time %q: %w", s, err)
+		}
+		*t = unixTime(v)
+		return nil
+	}
+	var v int64
+	if err := json.Unmarshal(b, &v); err != nil {
+		return err
+	}
+	*t = unixTime(v)
+	return nil
 }
 
 func (c *Client) StorageContent(ctx context.Context, node, storage string) ([]StorageContentItem, error) {
